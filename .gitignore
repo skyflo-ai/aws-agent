@@ -1,0 +1,16 @@
+# Binaries
+/go-aws-crawler
+
+# Build files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Dependency directories
+/vendor/
+
+# IDE/editor files
+*.log
+.env
