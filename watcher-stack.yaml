@@ -1,0 +1,95 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aws/aws-cdk/master/packages/@aws-cdk/cfnspec/spec-source/specification/000_cfn.json
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CloudFormation stack to configure an EventBridge rule for forwarding
+  selected CloudTrail management events from multiple AWS services to a
+  Watcher API Destination using API Destinations.
+
+Parameters:
+  WatcherEndpoint:
+    Type: String
+    Description: >
+      The HTTPS endpoint URL of the watcher that will receive event updates.
+      For example: https://mywatcher.example.com/events
+
+Resources:
+  # Create a connection for the API destination (using no authentication)
+  WatcherConnection:
+    Type: AWS::Events::Connection
+    Properties:
+      Name: "WatcherConnection"
+      Description: "Connection for the watcher API destination, using no authentication."
+      AuthorizationType: NONE
+
+  # Create an API destination that sends events to your watcher endpoint.
+  WatcherApiDestination:
+    Type: AWS::Events::ApiDestination
+    Properties:
+      Name: "WatcherApiDestination"
+      Description: "API Destination to forward CloudTrail events to the watcher."
+      ConnectionArn: !GetAtt WatcherConnection.Arn
+      InvocationEndpoint: !Ref WatcherEndpoint
+      HttpMethod: POST
+      InvocationRateLimitPerSecond: 300
+
+  # IAM Role for EventBridge to invoke the API Destination
+  CloudTrailEventRuleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "CloudTrailEventRuleRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "AllowInvokeApiDestination"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:InvokeApiDestination
+                Resource: !GetAtt WatcherApiDestination.Arn
+
+  # EventBridge rule that listens for CloudTrail events from multiple services.
+  CloudTrailEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: "CloudTrailEventsToWatcher"
+      Description: >
+        Rule to forward CloudTrail events from multiple AWS services 
+        (aws.ec2, aws.vpc, aws.iam, aws.autoscaling, aws.elb, aws.eks, aws.elasticache, aws.route53, aws.s3)
+        to the watcher API Destination.
+      EventPattern:
+        source:
+          - "aws.ec2"
+          - "aws.vpc"
+          - "aws.iam"
+          - "aws.autoscaling"
+          - "aws.elb"
+          - "aws.eks"
+          - "aws.elasticache"
+          - "aws.route53"
+          - "aws.s3"
+        detail-type:
+          - "AWS API Call via CloudTrail"
+      Targets:
+        - Id: "WatcherTarget"
+          Arn: !GetAtt WatcherApiDestination.Arn
+          RoleArn: !GetAtt CloudTrailEventRuleRole.Arn
+
+Outputs:
+  WatcherConnectionArn:
+    Description: "The ARN of the EventBridge Connection for the watcher."
+    Value: !GetAtt WatcherConnection.Arn
+
+  WatcherApiDestinationArn:
+    Description: "The ARN of the API Destination for the watcher."
+    Value: !GetAtt WatcherApiDestination.Arn
+
+  CloudTrailEventRuleArn:
+    Description: "The ARN of the EventBridge rule that forwards events to the watcher."
+    Value: !Ref CloudTrailEventRule

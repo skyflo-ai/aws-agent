@@ -1,0 +1,22 @@
+# Dockerfile.watcher
+FROM golang:1.23.6 AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -o watcher ./cmd/watcher/main.go
+
+FROM amazon/aws-cli:latest
+RUN yum install -y ca-certificates
+
+COPY entrypoint-watcher.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+COPY --from=builder /app/watcher /watcher
+
+# Expose the port where the watcher listens
+EXPOSE 8282
+
+ENTRYPOINT ["/entrypoint.sh"]
