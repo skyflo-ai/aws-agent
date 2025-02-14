@@ -1,0 +1,47 @@
+Resources:
+  AwsCrawlerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "AwsCrawlerPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:Describe*
+                  - iam:ListUsers
+                  - iam:ListAttachedUserPolicies
+                  - iam:ListUserPolicies
+                  - iam:GetUserPolicy
+                  - iam:ListPolicies
+                  - autoscaling:Describe*
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - eks:ListClusters
+                  - eks:DescribeCluster
+                  - elasticache:Describe*
+                  - route53:ListHostedZones
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketLocation
+                  - rds:DescribeDBInstances
+                Resource: "*"
+
+  AwsCrawlerLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "AwsCrawlerLambda"
+      PackageType: "Image"
+      Code:
+        ImageUri: "471112949823.dkr.ecr.us-east-1.amazonaws.com/aws-crawler:latest"
+      Role: !GetAtt AwsCrawlerLambdaRole.Arn
+      Timeout: 120  # Maximum of 2 minutes
+      Environment:
+        Variables:
+          BACKEND_ENDPOINT: "https://seagull-stable-pangolin.ngrok-free.app/api/aws-resources"
