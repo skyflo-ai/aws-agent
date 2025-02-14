@@ -1,4 +1,3 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/aws/aws-cdk/master/packages/@aws-cdk/cfnspec/spec-source/specification/000_cfn.json
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   CloudFormation stack to configure an EventBridge rule for forwarding
@@ -8,31 +7,36 @@ Description: >
 Parameters:
   WatcherEndpoint:
     Type: String
+    Default: "https://seagull-stable-pangolin.ngrok-free.app/api/aws-resources"
     Description: >
-      The HTTPS endpoint URL of the watcher that will receive event updates.
-      For example: https://mywatcher.example.com/events
+      The HTTPS endpoint URL of the backend that will receive event updates.
+      (Example: https://seagull-stable-pangolin.ngrok-free.app/api/aws-resources)
 
 Resources:
-  # Create a connection for the API destination (using no authentication)
+  # Create a connection for the API destination using API_KEY auth with dummy parameters.
   WatcherConnection:
     Type: AWS::Events::Connection
     Properties:
       Name: "WatcherConnection"
-      Description: "Connection for the watcher API destination, using no authentication."
-      AuthorizationType: NONE
+      Description: "Connection for the watcher API destination using API_KEY auth with dummy key."
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters:
+          ApiKeyName: "x-api-key"
+          ApiKeyValue: "dummy"
 
-  # Create an API destination that sends events to your watcher endpoint.
+  # Create an API destination that sends events to your backend endpoint.
   WatcherApiDestination:
     Type: AWS::Events::ApiDestination
     Properties:
       Name: "WatcherApiDestination"
-      Description: "API Destination to forward CloudTrail events to the watcher."
+      Description: "API Destination to forward CloudTrail events to the backend."
       ConnectionArn: !GetAtt WatcherConnection.Arn
       InvocationEndpoint: !Ref WatcherEndpoint
       HttpMethod: POST
       InvocationRateLimitPerSecond: 300
 
-  # IAM Role for EventBridge to invoke the API Destination
+  # IAM Role for EventBridge to invoke the API Destination.
   CloudTrailEventRuleRole:
     Type: AWS::IAM::Role
     Properties:
@@ -58,11 +62,11 @@ Resources:
   CloudTrailEventRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: "CloudTrailEventsToWatcher"
+      Name: "CloudTrailEventsToBackend"
       Description: >
         Rule to forward CloudTrail events from multiple AWS services 
         (aws.ec2, aws.vpc, aws.iam, aws.autoscaling, aws.elb, aws.eks, aws.elasticache, aws.route53, aws.s3)
-        to the watcher API Destination.
+        directly to the backend via API Destination.
       EventPattern:
         source:
           - "aws.ec2"
@@ -74,10 +78,11 @@ Resources:
           - "aws.elasticache"
           - "aws.route53"
           - "aws.s3"
+          - "custom.test"
         detail-type:
           - "AWS API Call via CloudTrail"
       Targets:
-        - Id: "WatcherTarget"
+        - Id: "BackendTarget"
           Arn: !GetAtt WatcherApiDestination.Arn
           RoleArn: !GetAtt CloudTrailEventRuleRole.Arn
 
@@ -91,5 +96,5 @@ Outputs:
     Value: !GetAtt WatcherApiDestination.Arn
 
   CloudTrailEventRuleArn:
-    Description: "The ARN of the EventBridge rule that forwards events to the watcher."
+    Description: "The ARN of the EventBridge rule that forwards events to the backend."
     Value: !Ref CloudTrailEventRule
