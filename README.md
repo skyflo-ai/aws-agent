@@ -40,13 +40,13 @@ Two separate Docker images are available: one for the initial crawler and one fo
 #### Build the Crawler Image
 
 ```bash
-docker build -f Dockerfile.crawler -t go-aws-crawler-crawler .
+docker build -f dockerfile.crawler -t go-aws-crawler-crawler .
 ```
 
 #### Build the Watcher Image
 
 ```bash
-docker build -f Dockerfile.watcher -t go-aws-crawler-watcher .
+docker build -f dockerfile.watcher -t go-aws-crawler-watcher .
 ```
 
 ### Running the Containers

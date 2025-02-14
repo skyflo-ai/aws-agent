@@ -16,16 +16,16 @@ type Config struct {
 
 // LoadConfig reads the required environment variables.
 func LoadConfig() (*Config, error) {
-	awsAccessKey := strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY"))
-	awsSecretKey := strings.TrimSpace(os.Getenv("AWS_SECRET_KEY"))
+	awsAccessKey := strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID"))
+	awsSecretKey := strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY"))
 	awsRegion := strings.TrimSpace(os.Getenv("AWS_REGION"))
 	backendEndpoint := strings.TrimSpace(os.Getenv("BACKEND_ENDPOINT"))
 
 	if awsAccessKey == "" {
-		return nil, fmt.Errorf("AWS_ACCESS_KEY is not set")
+		return nil, fmt.Errorf("AWS_ACCESS_KEY_ID is not set")
 	}
 	if awsSecretKey == "" {
-		return nil, fmt.Errorf("AWS_SECRET_KEY is not set")
+		return nil, fmt.Errorf("AWS_SECRET_ACCESS_KEY is not set")
 	}
 	if awsRegion == "" {
 		awsRegion = "us-east-1"
