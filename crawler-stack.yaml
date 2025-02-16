@@ -1,7 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS Crawler Lambda Stack with Private ECR, CodeBuild image copy, and
+  a Lambda Function URL for on-demand invocation.
+
 Resources:
+  # Create a private ECR repository named "skyflo-aws-crawler"
+  AwsCrawlerECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: skyflo-aws-crawler
+
+  # Role for CodeBuild to allow ECR operations and logging
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildECRPushPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # CodeBuild project to pull the public image, tag it as "skyflo-aws-crawler:latest", and push it into our private ECR
+  CopyImageCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: "CopySkyfloAwsCrawlerImage"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            variables:
+              AWS_REGION: ${AWS::Region}
+              AWS_ACCOUNT_ID: ${AWS::AccountId}
+          phases:
+            pre_build:
+              commands:
+                - echo Logging in to ECR...
+                - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+            build:
+              commands:
+                - echo Pulling public image...
+                - docker pull public.ecr.aws/x6v5w6d9/aws-crawler:latest
+                - echo Tagging image as skyflo-aws-crawler...
+                - docker tag public.ecr.aws/x6v5w6d9/aws-crawler:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/skyflo-aws-crawler:latest
+                - echo Pushing image to private ECR...
+                - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/skyflo-aws-crawler:latest
+            post_build:
+              commands:
+                - echo Image copy complete.
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:6.0
+        PrivilegedMode: true
+      Artifacts:
+        Type: NO_ARTIFACTS
+      TimeoutInMinutes: 10
+
+  # Lambda execution role with permissions needed by your crawler
   AwsCrawlerLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: "AwsCrawlerLambdaRole"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -10,7 +93,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: "AwsCrawlerPolicy"
+        - PolicyName: "AwsCrawlerLambdaPolicy"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -33,15 +116,41 @@ Resources:
                   - rds:DescribeDBInstances
                 Resource: "*"
 
+  # Lambda function using the image from our private ECR repository ("skyflo-aws-crawler:latest")
   AwsCrawlerLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: "AwsCrawlerLambda"
       PackageType: "Image"
       Code:
-        ImageUri: "471112949823.dkr.ecr.us-east-1.amazonaws.com/aws-crawler:latest"
+        ImageUri: !Sub "${AwsCrawlerECRRepository.RepositoryUri}:latest"
       Role: !GetAtt AwsCrawlerLambdaRole.Arn
-      Timeout: 120  # Maximum of 2 minutes
+      Timeout: 120
+      MemorySize: 128
+      Architectures:
+        - x86_64
       Environment:
         Variables:
           BACKEND_ENDPOINT: "https://seagull-stable-pangolin.ngrok-free.app/api/aws-resources"
+
+  # Create a Lambda Function URL for on-demand invocation, secured via AWS_IAM
+  AwsCrawlerLambdaFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: AWS_IAM    # Using AWS_IAM allows us tocontrol access via IAM policies
+      TargetFunctionArn: !GetAtt AwsCrawlerLambdaFunction.Arn
+      Cors:
+        AllowOrigins:
+          - "*"         # Adjust as per security requirements
+        AllowMethods:
+          - GET
+          - POST
+
+Outputs:
+  LambdaFunctionName:
+    Description: "AWS Crawler Lambda Function Name"
+    Value: !Ref AwsCrawlerLambdaFunction
+
+  LambdaFunctionUrl:
+    Description: "AWS Crawler Lambda Function URL"
+    Value: !GetAtt AwsCrawlerLambdaFunctionUrl.FunctionUrl
