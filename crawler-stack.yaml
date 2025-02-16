@@ -1,28 +1,31 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  AWS Crawler Lambda Stack with Private ECR, CodeBuild image copy, and
-  a Lambda Function URL for on-demand invocation.
+  AWS Crawler Lambda Stack with Private ECR, CodeBuild image copy,
+  a custom resource (with inline Lambda that sends a response) to wait for the image,
+  and a Lambda Function URL for on-demand invocation.
 
 Resources:
-  # Create a private ECR repository named "skyflo-aws-crawler"
+  # 1. Create a private ECR repository named "skyflo-aws-crawler-1"
   AwsCrawlerECRRepository:
     Type: AWS::ECR::Repository
     Properties:
-      RepositoryName: skyflo-aws-crawler
+      RepositoryName: skyflo-aws-crawler-1
 
-  # Role for CodeBuild to allow ECR operations and logging
+  # 2. IAM Role for CodeBuild to perform ECR operations and logging (skyflo-specific)
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
     Properties:
+      # No physical name specified; only policy names are given.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: codebuild.amazonaws.com
+              Service:
+                - codebuild.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: CodeBuildECRPushPolicy
+        - PolicyName: skyflo-CodeBuildECRPushPolicy-1
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -42,11 +45,12 @@ Resources:
                   - logs:PutLogEvents
                 Resource: "*"
 
-  # CodeBuild project to pull the public image, tag it as "skyflo-aws-crawler:latest", and push it into our private ECR
+  # 3. CodeBuild project to pull the public image, tag it as "skyflo-aws-crawler-1:latest",
+  #    and push it to our private ECR repository.
   CopyImageCodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: "CopySkyfloAwsCrawlerImage"
+      Name: "CopySkyfloAwsCrawlerImage-1"
       ServiceRole: !GetAtt CodeBuildServiceRole.Arn
       Source:
         Type: NO_SOURCE
@@ -65,14 +69,15 @@ Resources:
               commands:
                 - echo Pulling public image...
                 - docker pull public.ecr.aws/x6v5w6d9/aws-crawler:latest
-                - echo Tagging image as skyflo-aws-crawler...
-                - docker tag public.ecr.aws/x6v5w6d9/aws-crawler:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/skyflo-aws-crawler:latest
+                - echo Tagging image as skyflo-aws-crawler-1...
+                - docker tag public.ecr.aws/x6v5w6d9/aws-crawler:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/skyflo-aws-crawler-1:latest
                 - echo Pushing image to private ECR...
-                - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/skyflo-aws-crawler:latest
+                - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/skyflo-aws-crawler-1:latest
             post_build:
               commands:
                 - echo Image copy complete.
       Environment:
+        Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
         Image: aws/codebuild/standard:6.0
         PrivilegedMode: true
@@ -80,20 +85,145 @@ Resources:
         Type: NO_ARTIFACTS
       TimeoutInMinutes: 10
 
-  # Lambda execution role with permissions needed by your crawler
+  # 4. IAM Role for the custom resource Lambda (skyflo-specific)
+  TriggerBuildCustomResourceFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # No physical name specified; only policy names are given.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: skyflo-TriggerBuildPolicy-1
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # 5. Inline Lambda function that triggers the CodeBuild job, polls for completion,
+  #    and sends a response to CloudFormation.
+  TriggerBuildCustomResourceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "SkyfloTriggerBuildFunction-1"
+      Handler: index.handler
+      Runtime: python3.9
+      Timeout: 300
+      Role: !GetAtt TriggerBuildCustomResourceFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import time
+          import json
+          import urllib.request
+          import logging
+
+          logging.basicConfig(level=logging.INFO)
+
+          def send_response(event: dict, context: object, responseStatus: str, responseData: dict, physicalResourceId: str = None) -> None:
+              responseUrl = event['ResponseURL']
+              logging.info("Sending response to CloudFormation at %s", responseUrl)
+              responseBody = {
+                  'Status': responseStatus,
+                  'Reason': 'See CloudWatch Log Stream: ' + context.log_stream_name,
+                  'PhysicalResourceId': physicalResourceId or context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': responseData,
+              }
+              json_responseBody = json.dumps(responseBody)
+              headers = {
+                  'content-type': '',
+                  'content-length': str(len(json_responseBody))
+              }
+              req = urllib.request.Request(responseUrl, data=json_responseBody.encode('utf-8'), headers=headers, method='PUT')
+              try:
+                  with urllib.request.urlopen(req) as response:
+                      logging.info("CloudFormation returned status: %s", response.status)
+              except Exception as e:
+                  logging.error("send_response failed: %s", str(e))
+
+          def handler(event: dict, context: object) -> dict:
+              """
+              Trigger the CodeBuild project and poll until the build completes,
+              then send a response to CloudFormation.
+              """
+              my_region = os.environ.get('MY_AWS_REGION')
+              project_name = os.environ.get('PROJECT_NAME')
+              client = boto3.client('codebuild', region_name=my_region)
+              try:
+                  logging.info("Starting build for project: %s", project_name)
+                  response = client.start_build(projectName=project_name)
+                  build_id = response['build']['id']
+                  logging.info("Build started with ID: %s", build_id)
+                  
+                  # Poll for build completion
+                  while True:
+                      builds = client.batch_get_builds(ids=[build_id]).get('builds', [])
+                      if not builds:
+                          raise Exception("No build info returned for build ID: " + build_id)
+                      status = builds[0]['buildStatus']
+                      logging.info("Current build status: %s", status)
+                      if status in ['SUCCEEDED', 'FAILED', 'FAULT', 'STOPPED', 'TIMED_OUT']:
+                          break
+                      time.sleep(5)
+                  
+                  if status != 'SUCCEEDED':
+                      error_message = "Build did not succeed: %s" % status
+                      logging.error(error_message)
+                      send_response(event, context, 'FAILED', {'Error': error_message})
+                      raise Exception(error_message)
+                  
+                  logging.info("Build succeeded for project: %s", project_name)
+                  send_response(event, context, 'SUCCESS', {'Message': 'Build succeeded'})
+                  return {'Status': 'SUCCESS'}
+              except Exception as e:
+                  logging.error("Exception: %s", str(e))
+                  send_response(event, context, 'FAILED', {'Error': str(e)})
+                  raise
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref CopyImageCodeBuildProject
+          MY_AWS_REGION: !Ref "AWS::Region"
+
+  # 6. Custom resource that calls the inline Lambda to trigger and wait for the image copy to complete.
+  WaitForImageCustomResource:
+    Type: Custom::TriggerBuild
+    Properties:
+      ServiceToken: !GetAtt TriggerBuildCustomResourceFunction.Arn
+
+  # 7. IAM Role for the AWS Crawler Lambda function (skyflo-specific)
   AwsCrawlerLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: "AwsCrawlerLambdaRole"
+      RoleName: "SkyfloAwsCrawlerLambdaRole-1"
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
-              Service: lambda.amazonaws.com
+              Service:
+                - lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: "AwsCrawlerLambdaPolicy"
+        - PolicyName: skyflo-AwsCrawlerLambdaPolicy-1
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -116,11 +246,13 @@ Resources:
                   - rds:DescribeDBInstances
                 Resource: "*"
 
-  # Lambda function using the image from our private ECR repository ("skyflo-aws-crawler:latest")
+  # 8. AWS Lambda function using the image from the private ECR repository ("skyflo-aws-crawler-1:latest").
+  #    This function depends on the custom resource, ensuring that the image is available.
   AwsCrawlerLambdaFunction:
     Type: AWS::Lambda::Function
+    DependsOn: WaitForImageCustomResource
     Properties:
-      FunctionName: "AwsCrawlerLambda"
+      FunctionName: "AwsCrawlerLambda-1"
       PackageType: "Image"
       Code:
         ImageUri: !Sub "${AwsCrawlerECRRepository.RepositoryUri}:latest"
@@ -133,15 +265,15 @@ Resources:
         Variables:
           BACKEND_ENDPOINT: "https://seagull-stable-pangolin.ngrok-free.app/api/aws-resources"
 
-  # Create a Lambda Function URL for on-demand invocation, secured via AWS_IAM
+  # 9. Create a Lambda Function URL for on-demand invocation, secured via AWS_IAM.
   AwsCrawlerLambdaFunctionUrl:
     Type: AWS::Lambda::Url
     Properties:
-      AuthType: AWS_IAM    # Using AWS_IAM allows us tocontrol access via IAM policies
+      AuthType: AWS_IAM
       TargetFunctionArn: !GetAtt AwsCrawlerLambdaFunction.Arn
       Cors:
         AllowOrigins:
-          - "*"         # Adjust as per security requirements
+          - "*"         # Adjust as needed for security
         AllowMethods:
           - GET
           - POST
@@ -150,7 +282,6 @@ Outputs:
   LambdaFunctionName:
     Description: "AWS Crawler Lambda Function Name"
     Value: !Ref AwsCrawlerLambdaFunction
-
   LambdaFunctionUrl:
     Description: "AWS Crawler Lambda Function URL"
     Value: !GetAtt AwsCrawlerLambdaFunctionUrl.FunctionUrl
