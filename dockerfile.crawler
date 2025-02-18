@@ -1,4 +1,4 @@
-# Dockerfile.crawler
+# Stage 1: Build the binary
 FROM golang:1.23.6 AS builder
 
 WORKDIR /app
@@ -8,13 +8,11 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o crawler ./cmd/crawler/main.go
 
-FROM amazon/aws-cli:latest
-RUN yum install -y ca-certificates
+# Stage 2: Build the Lambda container image using the official AWS Lambda Go base image
+FROM public.ecr.aws/lambda/go:1
 
-# Copy the crawler-specific entrypoint script
-COPY entrypoint-crawler.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Copy the binary into the Lambda image. Lambda looks for the binary in the directory defined by the LAMBDA_TASK_ROOT.
+COPY --from=builder /app/crawler ${LAMBDA_TASK_ROOT}
 
-COPY --from=builder /app/crawler /crawler
-
-ENTRYPOINT ["/entrypoint.sh"]
+# Set the command that Lambda will invoke - the binary name.
+CMD [ "crawler" ]
