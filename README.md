@@ -1,104 +1,144 @@
 # AWS Resource Crawler & Watcher
 
-## Prerequisites
+A system for crawling AWS resources and monitoring for changes. This solution consists of two main CloudFormation stacks:
 
-- **Go:** Version 1.23.6 is recommended
-- **Docker:** To build and run container images
-- **AWS Credentials:** Ensure you have AWS credentials with read-only access to your target resources
-- **CloudTrail / EventBridge (for Watcher):** The default CloudTrail configuration is used. For the watcher, you can use EventBridge with API Destinations to forward events to the watcher's endpoint
-- **Backend Endpoint:** A backend service (or a dummy endpoint for testing) should be available to receive the JSON data from the crawler and watcher
+1. **Crawler Stack**  
+   Gathers a comprehensive inventory of AWS resources using a container-based Lambda function.
+2. **Watcher Stack**  
+   Monitors AWS CloudTrail events and forwards detected changes to a backend endpoint.
 
-## Configuration
+---
 
-### Environment Variables
+## Architecture Overview
 
-Create a `.env` file in the project root with the following content:
+### Crawler Workflow
 
-```dotenv
-AWS_ACCESS_KEY_ID=your_test_aws_access_key
-AWS_SECRET_ACCESS_KEY=your_test_aws_secret_key
-AWS_REGION=us-east-1
-BACKEND_ENDPOINT=http://host.docker.internal:8181/api/aws-resources
-```
+1. **Docker Image Build**  
+   The crawler image is built using the following command:
 
-### Starting the Dummy Backend (for Testing)
+   ```bash
+   docker build --platform linux/amd64 -f dockerfile.crawler -t go-aws-crawler-crawler .
+   ```
 
-For testing purposes, you can use the provided dummy backend that logs received data:
+   **Important:** The `--platform linux/amd64` flag is required because macOS defaults to ARM64, which will not build correctly for a x86_64 Lambda.
 
-```bash
-go run dummy_backend.go
-```
+2. **Image Source**  
+   The image is already available in a public repository:
 
-The dummy backend will start on port 8181 and log all received AWS resource data to the console.
+   ```bash
+   public.ecr.aws/x6v5w6d9/aws-crawler:latest
+   ```
 
-## Building & Running
+   You can pull this image if you prefer not to build it locally.
 
-### Building the Docker Images
+3. **CloudFormation Crawler Stack**  
+   When you deploy the `crawler-stack.yaml`, the following resources are created:
 
-Two separate Docker images are available: one for the initial crawler and one for the watcher.
+   - **Private ECR Repository:**  
+     A repository named `skyflo-aws-crawler-1` to store the crawler image.
+   - **CodeBuild Project:**  
+     Pulls the public image, tags it as `skyflo-aws-crawler-1:latest`, and pushes it to the private ECR.
+   - **Inline Polling Lambda Function:**  
+     This inline Lambda function triggers the CodeBuild project and polls until the build completes, then sends a response back to CloudFormation.
+   - **Final Crawler Lambda Function:**  
+     Once the image is successfully copied to the private ECR, a container-based Lambda function is created with a Function URL for direct invocation.
 
-#### Build the Crawler Image
+4. **Triggering the Crawler**  
+   After successful deployment:
+   - You can trigger the crawler Lambda either via its Function URL or from the Lambda console.
+   - The crawler aggregates AWS resource data and sends a JSON payload with the results to your backend endpoint.
 
-```bash
-docker build -f dockerfile.crawler -t go-aws-crawler-crawler .
-```
+---
 
-#### Build the Watcher Image
+### Watcher Workflow
 
-```bash
-docker build -f dockerfile.watcher -t go-aws-crawler-watcher .
-```
+1. **CloudFormation Watcher Stack**  
+   When you deploy the `watcher-stack.yaml`, the following resources are created:
 
-### Running the Containers
+   - **EventBridge Connection & API Destination:**  
+     Establishes a secure connection (using API_KEY authentication with a dummy key by default) to your backend endpoint.
+   - **EventBridge Rule:**  
+     Monitors CloudTrail events from multiple AWS services (EC2, VPC, IAM, AutoScaling, ELB, EKS, ElastiCache, Route53, S3, etc.) and forwards them to your backend via the API Destination.
 
-#### Run the Initial Crawler
+2. **Event Flow**
+   - AWS CloudTrail records events from your AWS environment.
+   - The EventBridge rule picks up these events and forwards them to your backend endpoint, ensuring near real-time notification of any changes.
 
-The initial crawler runs once and exits after sending its aggregated AWS resource data to the backend.
+---
 
-```bash
-docker run --env-file .env go-aws-crawler-crawler
-```
+## Deployment Instructions
 
-#### Run the Watcher
+### 1. Deploying the Crawler Stack
 
-The watcher runs continuously and listens on port 8282 for incoming events.
+1. **(Optional) Build the Docker Image Locally:**  
+   If needed, build the image with:
 
-```bash
-docker run --env-file .env --add-host=host.docker.internal:host-gateway -p 8282:8282 go-aws-crawler-watcher
-```
+   ```bash
+   docker build --platform linux/amd64 -f dockerfile.crawler -t go-aws-crawler-crawler .
+   ```
 
-## Testing
+   Alternatively, pull the pre-built image from:
 
-### Testing the Watcher
+   ```bash
+   public.ecr.aws/x6v5w6d9/aws-crawler:latest
+   ```
 
-Once the watcher container is running, you can simulate a CloudTrail event using curl:
+2. **Deploy the CloudFormation Stack:**  
+   Use the AWS CloudFormation console or CLI to deploy `crawler-stack.yaml`. This stack will create:
 
-```bash
-curl -X POST -H "Content-Type: application/json" -d '{
-  "detail-type": "AWS API Call via CloudTrail",
-  "source": "aws.ec2",
-  "detail": {
-    "eventName": "RunInstances",
-    "requestParameters": {},
-    "responseElements": {
-      "instancesSet": {
-        "items": [
-          { "instanceId": "i-test123" }
-        ]
-      }
-    }
-  }
-}' http://localhost:8282/events
-```
+   - A private ECR repository.
+   - A CodeBuild project that copies the public image into your private ECR.
+   - An inline polling Lambda function to monitor the CodeBuild job.
+   - The final container-based crawler Lambda function with its Function URL.
 
-To verify the event processing, check the watcher container logs:
+3. **Trigger the Crawler:**  
+   Once the stack is deployed, trigger the crawler Lambda via its Function URL or through the Lambda console. The crawler will:
+   - Aggregate AWS resource data.
+   - Post the JSON results to your backend endpoint.
 
-```bash
-docker logs <container_id>
-```
+### 2. Deploying the Watcher Stack
 
-## Deployment
+1. **Deploy the CloudFormation Stack:**  
+   Deploy `watcher-stack.yaml` using AWS CloudFormation. This stack creates:
 
-### CloudFormation Stack for One-Click Watcher Deployment
+   - An EventBridge connection and API Destination for secure communication with your backend.
+   - An EventBridge rule that listens to CloudTrail events from multiple AWS services.
 
-To automate the configuration of EventBridge and API Destinations for the watcher, use the provided CloudFormation template (see separate documentation or file). This stack can be deployed by your client via the AWS CloudFormation console with a one-click solution.
+2. **Event Forwarding:**  
+   Once deployed, any CloudTrail events (e.g., changes in EC2, VPC, IAM, etc.) are automatically forwarded to your backend endpoint.
+
+---
+
+## Testing the Setup
+
+1. **Backend Setup for Testing:**  
+   For local testing, run the dummy backend with:
+
+   ```bash
+   go run dummy_backend.go
+   ```
+
+   Use [ngrok](https://ngrok.com/) to expose the local backend (running on port 8181) to the internet.  
+   Update the backend URL in both the crawler and watcher YAML files to point to your ngrok URL.
+
+2. **Trigger and Monitor:**
+   - **Crawler:**  
+     Trigger the crawler Lambda function via its URL or from the console, and verify that the dummy backend logs show the received JSON payload.
+   - **Watcher:**  
+     Generate or simulate changes in your AWS environment to produce CloudTrail events, and confirm that these events are forwarded to your backend endpoint.
+
+---
+
+## Summary
+
+- **Crawler:**
+
+  - **Build Process:** Uses CodeBuild and an inline polling Lambda to copy a Docker image from a public repository into a private ECR repository.
+  - **Deployment:** Once the image is available, a container-based Lambda function is deployed with a Function URL for on-demand invocation.
+  - **Execution:** When triggered, the crawler gathers AWS resource data and sends it to the backend.
+
+- **Watcher:**
+  - **Monitoring:** Sets up an EventBridge rule to listen to CloudTrail events from various AWS services.
+  - **Notification:** Forwards any detected changes to the backend via an API Destination.
+
+Ensure that the backend endpoint (e.g., your ngrok URL) is correctly configured in both the crawler and watcher CloudFormation YAML files before deployment.
