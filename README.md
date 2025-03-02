@@ -1,86 +1,153 @@
-# AWS Resource Crawler & Watcher
+# AWS Crawler
 
-A system for crawling AWS resources and monitoring changes using two CloudFormation stacks-one for crawling and one for watching CloudTrail events. This solution deploys a container-based Lambda function that gathers AWS resource data and a CloudWatch-based watcher that forwards CloudTrail events to your backend endpoint.
+<p align="center">
+  <img src="./assets/readme.png" alt="Skyflo AWS Crawler" width="1920"/>
+</p>
 
-## Deployment and Testing Instructions
+<div align="center">
 
-### 1. Deploying the Crawler Stack
+  [![Website](https://img.shields.io/badge/Website-Visit-blue.svg)](https://skyflo.ai)
+  [![Discord](https://img.shields.io/badge/Discord-Join-blue.svg)](https://discord.gg/kCFNavMund)
+  [![Twitter/X Follow](https://img.shields.io/twitter/follow/skyflo_ai?style=social)](https://x.com/skyflo_ai)
+  [![YouTube Channel](https://img.shields.io/badge/YouTube-Subscribe-red.svg)](https://www.youtube.com/@SkyfloAI)
+  [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+  
+</div>
 
-#### Docker Image Build
+## Crawler and Watcher for Your AWS Environment
 
-Build the crawler image using:
+The Skyflo AWS Crawler is an open-source tool that scans and monitors your AWS environment, collecting resource information and sending it to the Skyflo backend for analysis. This enables AI-powered natural language interactions with your cloud infrastructure, making AWS management more accessible and efficient.
 
-```bash
-docker build --platform linux/amd64 -f dockerfile.crawler -t go-aws-crawler-crawler .
-```
+## Key Features
 
-**Important:**  
-Use the `--platform linux/amd64` flag because macOS defaults to ARM64, which is incompatible with an x86_64 Lambda.
+- **Comprehensive Resource Discovery**: Scans multiple AWS services including EC2, VPC, S3, RDS, IAM, and more
+- **Real-time Monitoring**: Watches AWS CloudTrail events to detect and report resource changes
+- **Secure Communication**: Uses JWT authentication and TLS for secure data transmission
+- **Minimal Permissions**: Uses fine-grained IAM policies with least privilege principles
+- **Serverless Deployment**: Runs as AWS Lambda functions with minimal overhead
+- **CloudFormation Templates**: Easy deployment with infrastructure-as-code templates
 
-Alternatively, pull the pre-built image from:
+## Architecture
 
-```bash
-public.ecr.aws/x6v5w6d9/aws-crawler:latest
-```
+The AWS Crawler consists of two primary components:
 
-#### CloudFormation Crawler Stack (`crawler-stack.yaml`)
+- **Initial Crawler**: A Lambda function that performs a comprehensive scan of your AWS resources
+- **Real-time Watcher**: An EventBridge rule that captures CloudTrail events and forwards them to the Skyflo backend
 
-Deploying this stack creates the following resources:
+### Crawler Flow
 
-- **Private ECR Repository:**  
-  A repository named `skyflo-aws-crawler-1` to store the crawler image.
-- **CodeBuild Project:**  
-  Pulls the public image, tags it as `skyflo-aws-crawler-1:latest`, and pushes it to the private ECR.
-- **Inline Polling Lambda Function:**  
-  Triggers the CodeBuild project and polls until the build completes, sending a response back to CloudFormation.
-- **Crawler Lambda Function:**  
-  Once the image is available in the private ECR, a container-based Lambda function is created with a Function URL for direct invocation.
+1. The crawler is deployed as a Lambda function via CloudFormation
+2. It authenticates with the Skyflo API using a secure JWT token
+3. It scans AWS resources across multiple services
+4. It processes and formats the resource data
+5. It sends the data securely to the Skyflo backend API
 
-#### Triggering the Crawler
+### Watcher Flow
 
-After deployment, you can trigger the crawler Lambda either via its Function URL or through the Lambda console. When executed, the crawler gathers AWS resource data and posts a JSON payload with the results to your backend endpoint.
+1. The watcher is deployed as an EventBridge rule via CloudFormation
+2. It captures specific CloudTrail management events
+3. It filters events based on relevance to resource changes
+4. It formats and enriches the event data
+5. It forwards events to the Skyflo backend in real-time
 
-### 2. Deploying the Watcher Stack
+## Tech Stack
 
-Deploy the `watcher-stack.yaml` using AWS CloudFormation. This stack creates:
+- **Core**: Go
+- **AWS SDK**: aws-sdk-go-v2
+- **Deployment**: AWS CloudFormation
+- **Runtime**: AWS Lambda
+- **Events**: AWS EventBridge
+- **Containerization**: Docker
+- **Repository**: AWS ECR
 
-- **EventBridge Connection & API Destination:**  
-  Establishes a secure connection (using API_KEY authentication with a dummy key by default) to your backend endpoint.
-- **EventBridge Rule:**  
-  Listens for CloudTrail events from multiple AWS services (e.g., EC2, VPC, IAM, AutoScaling, ELB, EKS, ElastiCache, Route53, S3) and forwards them to your backend.
+## Getting Started
 
-### 3. Testing the Setup
+### Prerequisites
 
-#### Backend Setup for Testing
+- AWS Account with permissions to deploy CloudFormation stacks
+- AWS CLI configured with appropriate credentials
+- Go 1.23+ (for local development)
+- Docker (for local testing)
 
-For local testing, run the dummy backend:
+### Local Development Setup
 
-```bash
-go run dummy_backend.go
-```
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/skyflo-ai/aws-crawler.git
+   cd aws-crawler
+   ```
 
-Use [ngrok](https://ngrok.com/) to expose the local backend (running on port 8181) to the internet, and update the backend URL in both YAML files accordingly.
+2. Install dependencies:
+   ```bash
+   go mod download
+   ```
 
-#### Testing the Crawler
+3. Build the crawler:
+   ```bash
+   go build -o aws-crawler ./cmd/crawler
+   ```
 
-- Trigger the crawler Lambda function via its Function URL or the Lambda console.
-- Verify that the dummy backend logs display the received JSON payload containing AWS resource data.
+4. Run tests:
+   ```bash
+   go test ./...
+   ```
 
-#### Testing the Watcher
+### Deployment to AWS
 
-- Simulate changes in your AWS environment or generate CloudTrail events.
-- Confirm that these events are forwarded to your backend endpoint by checking the dummy backend logs.
+1. Deploy the crawler using CloudFormation:
+   ```bash
+   aws cloudformation deploy \
+     --template-file crawler-stack.yaml \
+     --stack-name skyflo-aws-crawler \
+     --capabilities CAPABILITY_IAM
+   ```
 
-## Summary
+2. Deploy the watcher using CloudFormation:
+   ```bash
+   aws cloudformation deploy \
+     --template-file watcher-stack.yaml \
+     --stack-name skyflo-aws-watcher \
+     --capabilities CAPABILITY_IAM \
+     --parameter-overrides WatcherEndpoint=https://api.skyflo.ai/v1/webhooks/aws/{agent_id}/continuous-crawl
+   ```
 
-- **Crawler:**
+Alternatively, you can use the Skyflo platform to automatically deploy the crawler and watcher with a simple script.
 
-  - **Build Process:** Utilizes CodeBuild and an inline polling Lambda to copy a Docker image from a public repository into a private ECR repository.
-  - **Deployment:** A container-based Lambda function with a Function URL is deployed.
-  - **Execution:** When triggered, it gathers AWS resource data and sends the results to the backend.
+## Security
 
-- **Watcher:**
-  - **Monitoring:** Uses an EventBridge rule to capture CloudTrail events from various AWS services.
-  - **Notification:** Forwards any detected changes to the backend via an API Destination.
+The AWS Crawler implements multiple layers of security:
 
-Ensure that your backend endpoint (e.g., your ngrok URL) is correctly set in both CloudFormation YAML files before deployment.
+- JWT-based authentication for API communication
+- TLS encryption for data transmission
+- Least privilege IAM roles and policies
+- Event data validation and sanitization
+- No persistent storage of sensitive data
+
+## Contributing
+
+We welcome contributions! Please see our [Contributing Guide](https://github.com/skyflo-ai/skyflo/blob/main/CONTRIBUTING.md) for details.
+
+### Development Process
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+## Community
+
+- [Discord](https://discord.gg/kCFNavMund)
+- [Twitter/X](https://x.com/skyflo_ai)
+- [YouTube](https://www.youtube.com/@SkyfloAI)
+- [GitHub Discussions](https://github.com/skyflo-ai/skyflo/discussions)
+
+## Support
+
+- Documentation: [docs.skyflo.ai](https://docs.skyflo.ai)
+- Issues: [GitHub Issues](https://github.com/skyflo-ai/aws-crawler/issues)
+- Enterprise Support: [enterprise@skyflo.ai](mailto:enterprise@skyflo.ai)

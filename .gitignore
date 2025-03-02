@@ -14,3 +14,7 @@
 # IDE/editor files
 *.log
 .env
+.DS_Store
+.idea
+.vscode
+.cursor
